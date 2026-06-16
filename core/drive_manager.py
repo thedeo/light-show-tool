@@ -1,5 +1,6 @@
 import logging
 import subprocess
+import time
 import plistlib
 from .models import DriveInfo
 
@@ -12,6 +13,13 @@ logger = logging.getLogger(__name__)
 INFO_TIMEOUT = 5
 ACTION_TIMEOUT = 20
 ERASE_TIMEOUT = 180
+
+# Enumerating every external disk takes longer than a single-disk info
+# query, and gets slower still under the same load that causes the I/O
+# retries elsewhere in this app — give it more time and a couple retries
+# rather than reporting zero drives on one slow response.
+LIST_TIMEOUT = 15
+LIST_RETRY_ATTEMPTS = 3
 
 
 def _diskutil(args: list, timeout: float):
@@ -60,8 +68,19 @@ def iter_external_drives():
     """Yield each external, non-boot drive as soon as it's resolved, rather
     than waiting for every disk to be queried — the per-disk diskutil calls
     are the slow part, so callers can show drives as they're found."""
-    result = _diskutil(["list", "-plist", "external"], INFO_TIMEOUT)
+    result = None
+    for attempt in range(1, LIST_RETRY_ATTEMPTS + 1):
+        result = _diskutil(["list", "-plist", "external"], LIST_TIMEOUT)
+        if result is not None and result.returncode == 0:
+            break
+        logger.warning(
+            "Listing external drives failed (attempt %d/%d)", attempt, LIST_RETRY_ATTEMPTS,
+        )
+        if attempt < LIST_RETRY_ATTEMPTS:
+            time.sleep(1)
+
     if result is None or result.returncode != 0:
+        logger.error("Giving up listing external drives after %d attempts", LIST_RETRY_ATTEMPTS)
         return
 
     boot_disk = _boot_disk_id()

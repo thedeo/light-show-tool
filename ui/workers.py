@@ -54,9 +54,45 @@ class CopyWorker(QThread):
     def cancel(self):
         self._cancelled = True
 
+    def _attempt(self, drive, on_progress):
+        """Run the copy (with optional erase) for one drive. Returns
+        (success, error_message); error_message is "Cancelled" if the
+        cancel flag was set mid-operation."""
+        try:
+            current_drive = drive
+            delete_contents = False
+
+            if self._job.erase_mode == "format":
+                wipe_drive(drive, drive.volume_name)
+                current_drive = refresh_drive_info(drive)
+            elif self._job.erase_mode == "delete":
+                delete_contents = True
+
+            copy_groups_to_drive(
+                self._job.groups,
+                current_drive,
+                delete_contents,
+                on_progress,
+                lambda: self._cancelled,
+            )
+            return True, ""
+        except InterruptedError:
+            return False, "Cancelled"
+        except Exception as e:
+            logger.exception("Operation failed for %s (%s)", drive.volume_name, drive.disk_id)
+            return False, str(e)
+
     def run(self):
         errors = []
         total = len(self._job.drives)
+        # Drives that fail are retried once at the end of the run, after
+        # every other drive has finished — the recurring Errno 5 EIO seen
+        # in practice is specific to whichever drive the app touches
+        # first (likely racing a post-mount settling window for the whole
+        # batch), and every later drive consistently proves the volume is
+        # readable again within seconds.
+        retry_queue = []
+
         for i, drive in enumerate(self._job.drives):
             if self._cancelled:
                 break
@@ -68,36 +104,39 @@ class CopyWorker(QThread):
                 frac = _i + (done / total_b if total_b else 0)
                 self.overall_progress.emit(int(frac * 100 / total), _i, total)
 
-            try:
-                current_drive = drive
-                delete_contents = False
-
-                if self._job.erase_mode == "format":
-                    wipe_drive(drive, drive.volume_name)
-                    current_drive = refresh_drive_info(drive)
-                elif self._job.erase_mode == "delete":
-                    delete_contents = True
-
-                copy_groups_to_drive(
-                    self._job.groups,
-                    current_drive,
-                    delete_contents,
-                    on_progress,
-                    lambda: self._cancelled,
-                )
+            success, err = self._attempt(drive, on_progress)
+            if success:
                 self.drive_status.emit(label, True, "")
-            except InterruptedError:
+            elif err == "Cancelled":
                 self.drive_status.emit(label, False, "Cancelled")
                 break
-            except Exception as e:
-                logger.exception("Operation failed for %s (%s)", drive.volume_name, drive.disk_id)
-                errors.append(f"{label}: {e}")
-                self.drive_status.emit(label, False, str(e))
+            else:
+                logger.warning("%s failed, deferring a retry to the end of the run: %s", label, err)
+                retry_queue.append((drive, label))
 
             self.overall_progress.emit(int((i + 1) * 100 / total), i + 1, total)
 
             if _stagger(i, total, lambda: self._cancelled):
                 break
+
+        if retry_queue and not self._cancelled:
+            self.progress.emit(0, 1, f"Retrying {len(retry_queue)} drive(s) that failed earlier...")
+            for drive, label in retry_queue:
+                if self._cancelled:
+                    break
+
+                def on_progress(done, total_b, fname):
+                    self.progress.emit(done, total_b, fname)
+
+                success, err = self._attempt(drive, on_progress)
+                if success:
+                    self.drive_status.emit(label, True, "(succeeded on retry)")
+                elif err == "Cancelled":
+                    self.drive_status.emit(label, False, "Cancelled")
+                    break
+                else:
+                    errors.append(f"{label}: {err}")
+                    self.drive_status.emit(label, False, err)
 
         if self._cancelled:
             self.all_done.emit(False, "Operation cancelled.")
