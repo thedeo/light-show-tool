@@ -1,6 +1,9 @@
+import logging
 import shutil
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 
@@ -18,27 +21,32 @@ IO_RETRY_ATTEMPTS = 4
 IO_RETRY_DELAY = 0.75  # seconds, multiplied by attempt number
 
 
-def _with_io_retry(func):
+def _with_io_retry(func, what: str):
     last_err = None
-    for attempt in range(IO_RETRY_ATTEMPTS):
+    for attempt in range(1, IO_RETRY_ATTEMPTS + 1):
         try:
             return func()
         except OSError as e:
             last_err = e
-            time.sleep(IO_RETRY_DELAY * (attempt + 1))
+            logger.warning("%s failed (attempt %d/%d): %s", what, attempt, IO_RETRY_ATTEMPTS, e)
+            time.sleep(IO_RETRY_DELAY * attempt)
+    logger.error("%s failed after %d attempts: %s", what, IO_RETRY_ATTEMPTS, last_err)
     raise last_err
 
 
 def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_check):
     mount = Path(drive.mount_point)
+    logger.info("Starting copy to %s (disk_id=%s, erase_first=%s)", mount, drive.disk_id, erase_first)
 
     # Last line of defense: never let an erase-contents pass run against
     # the root filesystem or an empty path, no matter where mount_point came from.
     if erase_first and (not drive.mount_point or mount.resolve() == Path("/")):
+        logger.error("Refusing to erase %s — resolves to root or empty mount point", mount)
         raise RuntimeError(f"Refusing to erase contents of {mount} — not a real drive mount.")
 
     if erase_first:
-        for item in _with_io_retry(lambda: list(mount.iterdir())):
+        items = _with_io_retry(lambda: list(mount.iterdir()), f"Listing contents of {mount}")
+        for item in items:
             if cancel_check():
                 raise InterruptedError("Cancelled")
             if item.name in SKIP_NAMES:
@@ -48,12 +56,13 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
                     shutil.rmtree(item)
                 else:
                     item.unlink()
-            except OSError:
+            except OSError as e:
+                logger.warning("Could not remove %s: %s", item, e)
                 continue  # macOS-managed or permission-protected; leave it
 
     # Tesla requires all files in a root-level "LightShow" folder (case-sensitive)
     dest_dir = mount / "LightShow"
-    _with_io_retry(lambda: dest_dir.mkdir(parents=True, exist_ok=True))
+    _with_io_retry(lambda: dest_dir.mkdir(parents=True, exist_ok=True), f"Creating {dest_dir}")
 
     # Build flat list of (src, dest, size) from ShowFilePair items
     total_bytes = 0
@@ -68,6 +77,8 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
                 total_bytes += size
                 file_list.append((src_path, dest_dir / src_path.name, size))
 
+    logger.info("%s: copying %d files (%d bytes total)", mount, len(file_list), total_bytes)
+
     bytes_done = 0
     for src_path, dest_path, size in file_list:
         if cancel_check():
@@ -75,6 +86,7 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         progress_callback(bytes_done, total_bytes, src_path.name)
+        logger.debug("Copying %s -> %s (%d bytes)", src_path, dest_path, size)
 
         try:
             with open(src_path, "rb") as fsrc, open(dest_path, "wb") as fdst:
@@ -90,6 +102,8 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
         except InterruptedError:
             raise
         except OSError as e:
+            logger.error("Error copying %s to %s: %s", src_path, dest_path, e)
             raise RuntimeError(f"Error copying {src_path.name}: {e}") from e
 
+    logger.info("Finished copying to %s", mount)
     progress_callback(total_bytes, total_bytes, "")

@@ -1,3 +1,4 @@
+import logging
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.drive_manager import (
@@ -5,6 +6,8 @@ from core.drive_manager import (
     list_external_drives,
 )
 from core.file_copier import copy_groups_to_drive
+
+logger = logging.getLogger(__name__)
 
 # Pause between drives to let macOS/Finder settle each volume event
 # before the next mount/unmount fires. Prevents Finder lock contention
@@ -82,6 +85,7 @@ class CopyWorker(QThread):
                 self.drive_status.emit(label, False, "Cancelled")
                 break
             except Exception as e:
+                logger.exception("Operation failed for %s (%s)", drive.volume_name, drive.disk_id)
                 errors.append(f"{label}: {e}")
                 self.drive_status.emit(label, False, str(e))
 
@@ -124,6 +128,7 @@ class RenameWorker(QThread):
                 rename_drive(drive, self._job.new_name)
                 self.drive_status.emit(label, True, "")
             except Exception as e:
+                logger.exception("Operation failed for %s", label)
                 errors.append(f"{label}: {e}")
                 self.drive_status.emit(label, False, str(e))
 
@@ -171,6 +176,7 @@ class MountActionWorker(QThread):
                 action(drive)
                 self.drive_status.emit(label, True, "")
             except Exception as e:
+                logger.exception("Operation failed for %s", label)
                 errors.append(f"{label}: {e}")
                 self.drive_status.emit(label, False, str(e))
 
@@ -214,6 +220,7 @@ class WipeWorker(QThread):
                 wipe_drive(drive, self._job.new_name)
                 self.drive_status.emit(label, True, "")
             except Exception as e:
+                logger.exception("Operation failed for %s", label)
                 errors.append(f"{label}: {e}")
                 self.drive_status.emit(label, False, str(e))
 

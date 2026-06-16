@@ -1,6 +1,9 @@
+import logging
 import subprocess
 import plistlib
 from .models import DriveInfo
+
+logger = logging.getLogger(__name__)
 
 # diskutil calls are normally near-instant, but can wedge under heavy
 # Finder/diskarbitrationd lock contention (seen with 16+ simultaneously
@@ -14,12 +17,19 @@ ERASE_TIMEOUT = 180
 def _diskutil(args: list, timeout: float):
     """Run diskutil, returning CompletedProcess or None on timeout."""
     try:
-        return subprocess.run(
+        r = subprocess.run(
             ["diskutil", *args],
             capture_output=True,
             timeout=timeout,
         )
+        if r.returncode != 0:
+            logger.warning(
+                "diskutil %s -> rc=%d stderr=%s",
+                " ".join(args), r.returncode, r.stderr.decode(errors="replace").strip(),
+            )
+        return r
     except subprocess.TimeoutExpired:
+        logger.error("diskutil %s timed out after %ss", " ".join(args), timeout)
         return None
 
 

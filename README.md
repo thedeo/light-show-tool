@@ -61,6 +61,10 @@ Wipe and "delete existing files" are destructive, so the app guards against ever
 - `wipe_drive` and the file-delete path both independently refuse to run against the startup disk or an empty/root mount path, regardless of how a drive entry was produced
 - Every destructive action (Wipe, erase-before-copy, Unmount All) shows a confirmation dialog listing every targeted drive by name before proceeding; Wipe additionally requires checking "I understand this is permanent"
 
+## Troubleshooting
+
+Every run writes a fresh `light_show_tool.log` in the project folder (overwritten each launch, so it only ever holds the latest run). It records every `diskutil` call, drive scan, and copy/erase operation, including full error details when something fails — check it first if a drive errors out.
+
 ## File Pairing
 
 Light show sequences consist of a `.fseq` file and an audio file with the same base name:
