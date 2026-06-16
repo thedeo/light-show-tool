@@ -32,6 +32,11 @@ def _with_io_retry(func):
 def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_check):
     mount = Path(drive.mount_point)
 
+    # Last line of defense: never let an erase-contents pass run against
+    # the root filesystem or an empty path, no matter where mount_point came from.
+    if erase_first and (not drive.mount_point or mount.resolve() == Path("/")):
+        raise RuntimeError(f"Refusing to erase contents of {mount} — not a real drive mount.")
+
     if erase_first:
         for item in _with_io_retry(lambda: list(mount.iterdir())):
             if cancel_check():

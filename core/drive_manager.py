@@ -31,17 +31,33 @@ def _require(r, action: str) -> None:
         raise RuntimeError(msg or f"{action} failed.")
 
 
+def _boot_disk_id():
+    """Whole-disk identifier the Mac is currently running from.
+
+    diskutil's "external" filter already excludes internal disks, but a
+    Mac can also boot from an external drive (common with Thunderbolt/USB
+    boot volumes) — that disk would otherwise show up as a normal external
+    drive here and become eligible for Wipe/erase. Always exclude it.
+    """
+    r = _diskutil(["info", "-plist", "/"], INFO_TIMEOUT)
+    if r is None or r.returncode != 0:
+        return None
+    info = plistlib.loads(r.stdout)
+    return info.get("ParentWholeDisk") or info.get("DeviceIdentifier")
+
+
 def list_external_drives() -> list:
     result = _diskutil(["list", "-plist", "external"], INFO_TIMEOUT)
     if result is None or result.returncode != 0:
         return []
 
+    boot_disk = _boot_disk_id()
     data = plistlib.loads(result.stdout)
     drives = []
 
     for disk_entry in data.get("AllDisksAndPartitions", []):
         disk_id = disk_entry.get("DeviceIdentifier")
-        if not disk_id:
+        if not disk_id or disk_id == boot_disk:
             continue
 
         partitions = disk_entry.get("Partitions", [])
@@ -101,6 +117,10 @@ def rename_drive(drive: DriveInfo, new_name: str) -> None:
 
 
 def wipe_drive(drive: DriveInfo, new_name: str) -> None:
+    # Last line of defense: never erase the disk the OS is running from,
+    # no matter how this DriveInfo was constructed.
+    if drive.disk_id == _boot_disk_id():
+        raise RuntimeError(f"Refusing to wipe {drive.disk_id} — it's the startup disk.")
     r = _diskutil(
         ["eraseDisk", "FAT32", new_name, "MBRFormat", drive.disk_id],
         ERASE_TIMEOUT,

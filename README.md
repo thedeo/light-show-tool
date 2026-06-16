@@ -53,6 +53,14 @@ Rename all selected drives to the same FAT32 label (max 11 characters).
 ### Wipe
 Erase and reformat selected drives as FAT32. Requires an explicit confirmation checkbox before proceeding.
 
+## Safety
+
+Wipe and "delete existing files" are destructive, so the app guards against ever touching the wrong disk:
+
+- The drive list only ever includes external, non-boot disks — even if your Mac boots from an external drive, that disk is detected and excluded automatically
+- `wipe_drive` and the file-delete path both independently refuse to run against the startup disk or an empty/root mount path, regardless of how a drive entry was produced
+- Every destructive action (Wipe, erase-before-copy, Unmount All) shows a confirmation dialog listing every targeted drive by name before proceeding; Wipe additionally requires checking "I understand this is permanent"
+
 ## File Pairing
 
 Light show sequences consist of a `.fseq` file and an audio file with the same base name:
