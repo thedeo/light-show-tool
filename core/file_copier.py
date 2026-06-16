@@ -1,5 +1,6 @@
 import logging
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -14,11 +15,12 @@ SKIP_NAMES = {
     ".DocumentRevisions-V100", ".DS_Store",
 }
 
-# A volume can briefly throw EIO right after it's mounted (still settling),
-# especially with many drives mounted at once. Retry the first touch rather
-# than failing the whole drive over a transient hiccup.
-IO_RETRY_ATTEMPTS = 4
-IO_RETRY_DELAY = 0.75  # seconds, multiplied by attempt number
+# A freshly-surfaced volume can intermittently throw EIO while Spotlight is
+# still indexing it (or under general Finder/diskarbitrationd lock
+# contention with many drives mounted at once). Retry rather than failing
+# the whole drive over what's usually a transient condition.
+IO_RETRY_ATTEMPTS = 6
+IO_RETRY_DELAY = 1.5  # seconds, multiplied by attempt number
 
 
 def _with_io_retry(func, what: str):
@@ -34,6 +36,22 @@ def _with_io_retry(func, what: str):
     raise last_err
 
 
+def _disable_spotlight(mount: Path) -> None:
+    """Best-effort: stop Spotlight from indexing this volume so it can't
+    hold a lock on directory reads while we're erasing/copying."""
+    try:
+        r = subprocess.run(
+            ["mdutil", "-i", "off", str(mount)],
+            capture_output=True, timeout=5,
+        )
+        logger.info(
+            "mdutil -i off %s -> rc=%d %s",
+            mount, r.returncode, r.stdout.decode(errors="replace").strip(),
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("Could not disable Spotlight indexing on %s: %s", mount, e)
+
+
 def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_check):
     mount = Path(drive.mount_point)
     logger.info("Starting copy to %s (disk_id=%s, erase_first=%s)", mount, drive.disk_id, erase_first)
@@ -43,6 +61,8 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
     if erase_first and (not drive.mount_point or mount.resolve() == Path("/")):
         logger.error("Refusing to erase %s — resolves to root or empty mount point", mount)
         raise RuntimeError(f"Refusing to erase contents of {mount} — not a real drive mount.")
+
+    _disable_spotlight(mount)
 
     if erase_first:
         items = _with_io_retry(lambda: list(mount.iterdir()), f"Listing contents of {mount}")
