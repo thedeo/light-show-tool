@@ -303,6 +303,7 @@ class FileGroupCard(QWidget):
         self._checkbox.setToolTip("Include this group in the copy operation")
         self._checkbox.toggled.connect(self._on_selection_toggled)
         header.addWidget(self._checkbox)
+        header.addSpacing(6)
 
         self._name_label = QLabel(group.name)
         self._name_label.setStyleSheet("font-weight: bold;")

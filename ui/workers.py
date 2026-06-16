@@ -1,6 +1,9 @@
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
-from core.drive_manager import rename_drive, wipe_drive, refresh_drive_info
+from core.drive_manager import (
+    rename_drive, wipe_drive, refresh_drive_info, mount_drive, unmount_drive,
+    list_external_drives,
+)
 from core.file_copier import copy_groups_to_drive
 
 # Pause between drives to let macOS/Finder settle each volume event
@@ -20,9 +23,19 @@ def _stagger(index: int, total: int, cancelled_fn) -> bool:
     return False
 
 
+class DriveScanWorker(QThread):
+    """Runs diskutil-based drive discovery off the main thread so a slow
+    or wedged diskutil can never block the UI from appearing/responding."""
+    drives_ready = pyqtSignal(list)
+
+    def run(self):
+        self.drives_ready.emit(list_external_drives())
+
+
 class CopyWorker(QThread):
-    progress = pyqtSignal(int, int, str)      # bytes_done, bytes_total, filename
-    drive_status = pyqtSignal(str, bool, str) # drive label, success, error
+    progress = pyqtSignal(int, int, str)         # bytes_done, bytes_total, filename (current drive)
+    overall_progress = pyqtSignal(int, int, int) # percent, drives_completed, drives_total
+    drive_status = pyqtSignal(str, bool, str)    # drive label, success, error
     all_done = pyqtSignal(bool, str)
 
     def __init__(self, job, parent=None):
@@ -41,17 +54,27 @@ class CopyWorker(QThread):
                 break
 
             label = f"{drive.volume_name} ({drive.disk_id})"
+
+            def on_progress(done, total_b, fname, _i=i):
+                self.progress.emit(done, total_b, fname)
+                frac = _i + (done / total_b if total_b else 0)
+                self.overall_progress.emit(int(frac * 100 / total), _i, total)
+
             try:
                 current_drive = drive
-                if self._job.erase_first:
+                delete_contents = False
+
+                if self._job.erase_mode == "format":
                     wipe_drive(drive, drive.volume_name)
                     current_drive = refresh_drive_info(drive)
+                elif self._job.erase_mode == "delete":
+                    delete_contents = True
 
                 copy_groups_to_drive(
                     self._job.groups,
                     current_drive,
-                    False,
-                    lambda done, total_b, fname: self.progress.emit(done, total_b, fname),
+                    delete_contents,
+                    on_progress,
                     lambda: self._cancelled,
                 )
                 self.drive_status.emit(label, True, "")
@@ -61,6 +84,8 @@ class CopyWorker(QThread):
             except Exception as e:
                 errors.append(f"{label}: {e}")
                 self.drive_status.emit(label, False, str(e))
+
+            self.overall_progress.emit(int((i + 1) * 100 / total), i + 1, total)
 
             if _stagger(i, total, lambda: self._cancelled):
                 break
@@ -97,6 +122,53 @@ class RenameWorker(QThread):
             self.progress.emit(i, total, f"Renaming {label}...")
             try:
                 rename_drive(drive, self._job.new_name)
+                self.drive_status.emit(label, True, "")
+            except Exception as e:
+                errors.append(f"{label}: {e}")
+                self.drive_status.emit(label, False, str(e))
+
+            if _stagger(i, total, lambda: self._cancelled):
+                break
+
+        if not self._cancelled:
+            self.progress.emit(total, total, "")
+
+        if self._cancelled:
+            self.all_done.emit(False, "Operation cancelled.")
+        elif errors:
+            self.all_done.emit(False, "\n".join(errors))
+        else:
+            self.all_done.emit(True, "")
+
+
+class MountActionWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    drive_status = pyqtSignal(str, bool, str)
+    all_done = pyqtSignal(bool, str)
+
+    def __init__(self, drives, mount: bool, parent=None):
+        super().__init__(parent)
+        self._drives = drives
+        self._mount = mount
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        errors = []
+        total = len(self._drives)
+        verb = "Mounting" if self._mount else "Unmounting"
+        action = mount_drive if self._mount else unmount_drive
+
+        for i, drive in enumerate(self._drives):
+            if self._cancelled:
+                break
+
+            label = f"{drive.volume_name} ({drive.disk_id})"
+            self.progress.emit(i, total, f"{verb} {label}...")
+            try:
+                action(drive)
                 self.drive_status.emit(label, True, "")
             except Exception as e:
                 errors.append(f"{label}: {e}")

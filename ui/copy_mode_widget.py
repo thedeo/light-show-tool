@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
     QLabel, QMessageBox,
 )
 from PyQt6.QtCore import pyqtSlot
@@ -27,6 +27,21 @@ class CopyModeWidget(QWidget):
         self._panel = FileGroupPanelWidget()
         layout.addWidget(self._panel)
 
+        # Bottom bar
+        bottom = QHBoxLayout()
+        bottom.addWidget(QLabel("Before copying:"))
+        self._erase_combo = QComboBox()
+        self._erase_combo.addItem("Don't erase", "none")
+        self._erase_combo.addItem("Delete existing files (fast)", "delete")
+        self._erase_combo.addItem("Format drive (slow, full reformat)", "format")
+        bottom.addWidget(self._erase_combo)
+        bottom.addStretch()
+        self._copy_btn = QPushButton("Copy Groups to Selected Drives")
+        self._copy_btn.setFixedHeight(32)
+        self._copy_btn.clicked.connect(self._start_copy)
+        bottom.addWidget(self._copy_btn)
+        layout.addLayout(bottom)
+
         # Load persisted state before connecting signals so the initial
         # load doesn't trigger spurious saves.
         saved = load_state()
@@ -36,17 +51,6 @@ class CopyModeWidget(QWidget):
         self._panel.groups_changed.connect(self._update_copy_btn)
         self._panel.groups_changed.connect(self._save_state)
         self._update_copy_btn()
-
-        # Bottom bar
-        bottom = QHBoxLayout()
-        self._erase_checkbox = QCheckBox("Erase drive contents before copying")
-        bottom.addWidget(self._erase_checkbox)
-        bottom.addStretch()
-        self._copy_btn = QPushButton("Copy Groups to Selected Drives")
-        self._copy_btn.setFixedHeight(32)
-        self._copy_btn.clicked.connect(self._start_copy)
-        bottom.addWidget(self._copy_btn)
-        layout.addLayout(bottom)
 
     @pyqtSlot(list)
     def set_selected_drives(self, drives: list):
@@ -85,6 +89,29 @@ class CopyModeWidget(QWidget):
             QMessageBox.warning(self, "No Drives", "Select at least one drive.")
             return
 
+        erase_mode = self._erase_combo.currentData()
+
+        # Drives in a non-Tesla-compatible format won't be fixed by deleting
+        # files alone — only "format" reformats the filesystem.
+        if erase_mode != "format":
+            bad_drives = [d for d in self._selected_drives if d.needs_format]
+            if bad_drives:
+                names = "\n".join(
+                    f"  • {d.volume_name} ({d.disk_id}) — {d.filesystem or 'unknown'}"
+                    for d in bad_drives
+                )
+                proceed = QMessageBox.warning(
+                    self,
+                    "Incompatible Drive Format",
+                    f"These drives aren't in a Tesla-compatible format "
+                    f"(FAT32/exFAT):\n\n{names}\n\n"
+                    "Choose \"Format drive\" above, or wipe them first. "
+                    "Continue anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                )
+                if proceed != QMessageBox.StandardButton.Yes:
+                    return
+
         # Warn about any missing source files before proceeding
         invalid = self._panel.collect_invalid_pairs()
         if invalid:
@@ -122,7 +149,7 @@ class CopyModeWidget(QWidget):
         job = CopyJob(
             groups=groups,
             drives=self._selected_drives,
-            erase_first=self._erase_checkbox.isChecked(),
+            erase_mode=erase_mode,
         )
 
         dlg = ConfirmDialog.for_copy(job)
@@ -130,9 +157,11 @@ class CopyModeWidget(QWidget):
             return
 
         progress = ProgressDialog("Copying Files", parent=self)
+        progress.enable_overall_progress(len(job.drives))
         worker = CopyWorker(job, parent=self)
 
         worker.progress.connect(progress.update_progress)
+        worker.overall_progress.connect(progress.update_overall_progress)
         worker.drive_status.connect(
             lambda label, ok, err: progress.set_status(
                 f"{'✓' if ok else '✗'} {label}" + (f": {err}" if err else "")

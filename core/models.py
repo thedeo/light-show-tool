@@ -11,6 +11,20 @@ class DriveInfo:
     size_bytes: int
     filesystem: str
 
+    COMPATIBLE_FILESYSTEMS = {"msdos", "ms-dos", "fat32", "fat16", "fat12", "exfat"}
+
+    @property
+    def is_mounted(self) -> bool:
+        return bool(self.mount_point)
+
+    @property
+    def needs_format(self) -> bool:
+        """True if the filesystem isn't one Tesla light show accepts (FAT/exFAT)."""
+        fs = (self.filesystem or "").strip().lower()
+        if not fs:
+            return False
+        return fs not in self.COMPATIBLE_FILESYSTEMS
+
     @property
     def display_size(self) -> str:
         gb = self.size_bytes / (1024 ** 3)
@@ -95,7 +109,7 @@ class FileGroup:
 class CopyJob:
     groups: list
     drives: list
-    erase_first: bool
+    erase_mode: str = "none"  # "none", "delete" (clear files only), "format" (full reformat)
 
 
 @dataclass

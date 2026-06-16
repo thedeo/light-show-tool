@@ -45,7 +45,12 @@ class ConfirmDialog(QDialog):
         drive_lines = "\n".join(
             f"  • {d.volume_name} ({d.disk_id})" for d in job.drives
         )
-        erase_note = "\n\nAll existing files will be ERASED before copying." if job.erase_first else ""
+        if job.erase_mode == "format":
+            erase_note = "\n\nDrives will be FULLY REFORMATTED (FAT32) before copying."
+        elif job.erase_mode == "delete":
+            erase_note = "\n\nExisting files will be deleted before copying (format kept as-is)."
+        else:
+            erase_note = ""
         text = (
             f"Copy the following groups:\n{group_lines}\n\n"
             f"To {len(job.drives)} drive{'s' if len(job.drives) != 1 else ''}:\n{drive_lines}"

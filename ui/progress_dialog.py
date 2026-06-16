@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton,
-    QHBoxLayout, QTextEdit,
+    QHBoxLayout, QTextEdit, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 
@@ -18,6 +18,23 @@ class ProgressDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
+
+        # Overall progress across all drives — hidden unless a caller with
+        # multiple drives opts in via enable_overall_progress().
+        self._overall_label = QLabel("")
+        self._overall_label.setStyleSheet("font-weight: bold;")
+        self._overall_label.setVisible(False)
+        layout.addWidget(self._overall_label)
+
+        self._overall_bar = QProgressBar()
+        self._overall_bar.setRange(0, 100)
+        self._overall_bar.setVisible(False)
+        layout.addWidget(self._overall_bar)
+
+        self._overall_divider = QFrame()
+        self._overall_divider.setFrameShape(QFrame.Shape.HLine)
+        self._overall_divider.setVisible(False)
+        layout.addWidget(self._overall_divider)
 
         self._status_label = QLabel("Starting...")
         self._status_label.setStyleSheet("font-weight: bold;")
@@ -49,6 +66,17 @@ class ProgressDialog(QDialog):
     def was_cancelled(self) -> bool:
         return self._cancelled
 
+    def enable_overall_progress(self, total_drives: int):
+        self._overall_label.setText(f"Overall: 0 of {total_drives} drives (0%)")
+        self._overall_label.setVisible(True)
+        self._overall_bar.setVisible(True)
+        self._overall_divider.setVisible(True)
+
+    @pyqtSlot(int, int, int)
+    def update_overall_progress(self, percent: int, completed: int, total: int):
+        self._overall_bar.setValue(percent)
+        self._overall_label.setText(f"Overall: {completed} of {total} drives ({percent}%)")
+
     def _on_cancel(self):
         self._cancelled = True
         self._cancel_btn.setEnabled(False)
@@ -76,6 +104,8 @@ class ProgressDialog(QDialog):
         self._cancel_btn.setEnabled(False)
         self._progress_bar.setValue(100)
         self._sub_label.setText("")
+        if self._overall_bar.isVisible() and success:
+            self._overall_bar.setValue(100)
 
         if success:
             self._status_label.setText("All done!")
