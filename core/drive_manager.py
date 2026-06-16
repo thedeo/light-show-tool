@@ -56,14 +56,16 @@ def _boot_disk_id():
     return info.get("ParentWholeDisk") or info.get("DeviceIdentifier")
 
 
-def list_external_drives() -> list:
+def iter_external_drives():
+    """Yield each external, non-boot drive as soon as it's resolved, rather
+    than waiting for every disk to be queried — the per-disk diskutil calls
+    are the slow part, so callers can show drives as they're found."""
     result = _diskutil(["list", "-plist", "external"], INFO_TIMEOUT)
     if result is None or result.returncode != 0:
-        return []
+        return
 
     boot_disk = _boot_disk_id()
     data = plistlib.loads(result.stdout)
-    drives = []
 
     for disk_entry in data.get("AllDisksAndPartitions", []):
         disk_id = disk_entry.get("DeviceIdentifier")
@@ -99,16 +101,14 @@ def list_external_drives() -> list:
                 chosen_part_id = part_id
 
         if chosen_info is not None:
-            drives.append(DriveInfo(
+            yield DriveInfo(
                 disk_id=disk_id,
                 partition_id=chosen_part_id,
                 volume_name=chosen_info.get("VolumeName") or "Unnamed",
                 mount_point=chosen_info.get("MountPoint", ""),
                 size_bytes=chosen_info.get("TotalSize", 0),
                 filesystem=chosen_info.get("FilesystemType", ""),
-            ))
-
-    return drives
+            )
 
 
 def mount_drive(drive: DriveInfo) -> None:

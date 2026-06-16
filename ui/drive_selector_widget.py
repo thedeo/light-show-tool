@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QCheckBox, QFrame, QSizePolicy, QMessageBox,
+    QScrollArea, QCheckBox, QFrame, QSizePolicy, QMessageBox, QProgressBar,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from .progress_dialog import ProgressDialog
@@ -92,6 +92,37 @@ class DriveSelectorWidget(QWidget):
         header.setStyleSheet("font-weight: bold; font-size: 13px;")
         layout.addWidget(header)
 
+        # Banner shown for the full duration of a scan — kept separate from
+        # the drive list so it stays visible even after drives start
+        # appearing incrementally, not just while the list is empty.
+        self._scan_banner = QFrame()
+        self._scan_banner.setStyleSheet(
+            "background-color: #2d5a78; border-radius: 4px;"
+        )
+        banner_layout = QHBoxLayout(self._scan_banner)
+        banner_layout.setContentsMargins(8, 6, 8, 6)
+        banner_layout.setSpacing(6)
+
+        self._scan_spinner = QProgressBar()
+        self._scan_spinner.setRange(0, 0)  # indeterminate
+        self._scan_spinner.setFixedWidth(40)
+        self._scan_spinner.setFixedHeight(10)
+        self._scan_spinner.setTextVisible(False)
+        self._scan_spinner.setStyleSheet(
+            "QProgressBar { background-color: rgba(255, 255, 255, 40); "
+            "border: none; border-radius: 5px; }"
+            "QProgressBar::chunk { background-color: #4a90d9; border-radius: 5px; }"
+        )
+        banner_layout.addWidget(self._scan_spinner)
+
+        scan_label = QLabel("Scanning for drives…")
+        scan_label.setStyleSheet("color: white; font-weight: bold; font-size: 11px;")
+        banner_layout.addWidget(scan_label)
+        banner_layout.addStretch()
+
+        self._scan_banner.setVisible(False)
+        layout.addWidget(self._scan_banner)
+
         # Scroll area for drive rows
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -145,10 +176,6 @@ class DriveSelectorWidget(QWidget):
         self._no_drives_label.setStyleSheet("color: gray; font-size: 11px;")
         self._no_drives_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._scanning_label = QLabel("Scanning for drives...")
-        self._scanning_label.setStyleSheet("color: gray; font-size: 11px;")
-        self._scanning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.refresh()
 
     def refresh(self):
@@ -160,44 +187,49 @@ class DriveSelectorWidget(QWidget):
         for row in self._rows:
             row.setParent(None)
         self._rows.clear()
+        self._drives = []
 
         while self._list_layout.count():
             item = self._list_layout.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
 
-        self._list_layout.addWidget(self._scanning_label)
         self._list_layout.addStretch()
+        self._scan_banner.setVisible(True)
 
         for btn in self._action_buttons:
             btn.setEnabled(False)
 
         self._scan_worker = DriveScanWorker(parent=self)
-        self._scan_worker.drives_ready.connect(self._on_drives_ready)
+        self._scan_worker.drive_found.connect(self._on_drive_found)
+        self._scan_worker.scan_done.connect(self._on_scan_done)
         self._scan_worker.start()
 
-    def _on_drives_ready(self, drives: list):
+    def _on_drive_found(self, drive):
+        self._drives.append(drive)
+
+        row = DriveRow(drive)
+        row.toggled.connect(self._on_row_toggled)
+        self._rows.append(row)
+        # Insert above the trailing stretch so new rows append in order.
+        self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+
+        self._emit_selection()
+
+    def _on_scan_done(self):
         self._scan_worker = None
+        self._scan_banner.setVisible(False)
         for btn in self._action_buttons:
             btn.setEnabled(True)
 
-        while self._list_layout.count():
-            item = self._list_layout.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-
-        self._drives = drives
-
         if not self._drives:
+            while self._list_layout.count():
+                item = self._list_layout.takeAt(0)
+                if item.widget():
+                    item.widget().setParent(None)
             self._list_layout.addWidget(self._no_drives_label)
-        else:
-            for drive in self._drives:
-                row = DriveRow(drive)
-                row.toggled.connect(self._on_row_toggled)
-                self._rows.append(row)
-                self._list_layout.addWidget(row)
+            self._list_layout.addStretch()
 
-        self._list_layout.addStretch()
         self._emit_selection()
 
     def _on_row_toggled(self, drive, checked):

@@ -3,7 +3,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.drive_manager import (
     rename_drive, wipe_drive, refresh_drive_info, mount_drive, unmount_drive,
-    list_external_drives,
+    iter_external_drives,
 )
 from core.file_copier import copy_groups_to_drive
 
@@ -28,11 +28,16 @@ def _stagger(index: int, total: int, cancelled_fn) -> bool:
 
 class DriveScanWorker(QThread):
     """Runs diskutil-based drive discovery off the main thread so a slow
-    or wedged diskutil can never block the UI from appearing/responding."""
-    drives_ready = pyqtSignal(list)
+    or wedged diskutil can never block the UI from appearing/responding.
+    Emits each drive as soon as it's found so the UI can populate
+    incrementally instead of waiting for the whole scan to finish."""
+    drive_found = pyqtSignal(object)  # DriveInfo
+    scan_done = pyqtSignal()
 
     def run(self):
-        self.drives_ready.emit(list_external_drives())
+        for drive in iter_external_drives():
+            self.drive_found.emit(drive)
+        self.scan_done.emit()
 
 
 class CopyWorker(QThread):
