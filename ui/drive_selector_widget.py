@@ -1,3 +1,4 @@
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QCheckBox, QFrame, QSizePolicy, QMessageBox, QProgressBar,
@@ -35,11 +36,11 @@ class DriveRow(QWidget):
             status_label.setToolTip("Unmounted")
         layout.addWidget(status_label)
 
-        name_text = drive.volume_name
+        name_text = Path(drive.mount_point).name if drive.is_mounted else drive.volume_name
         name_style = "color: gray;" if not drive.is_mounted else ""
         tooltip_lines = []
         if drive.needs_format:
-            name_text = f"{drive.volume_name} ⚠"
+            name_text = f"{name_text} ⚠"
             name_style = "color: #c66400; font-weight: bold;"
             tooltip_lines.append(
                 f"Format: {drive.filesystem or 'unknown'} — not Tesla-compatible "

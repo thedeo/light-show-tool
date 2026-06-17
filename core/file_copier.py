@@ -6,7 +6,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 1024 * 1024  # 1 MB
+# If the destination file size hasn't grown for this many seconds, the drive
+# is considered stalled and the copy is aborted.  15 s is conservative — at
+# even 0.1 MB/s a 1 MB chunk takes 10 s, so any genuine write stall shows up
+# well within this window.
+STALL_TIMEOUT = 15  # seconds
 
 # macOS recreates these on any mounted volume; they're permission-protected
 # and aren't part of the light show, so leave them alone when clearing a drive.
@@ -40,15 +44,20 @@ def _disable_spotlight(mount: Path) -> None:
     """Best-effort: stop Spotlight from indexing this volume so it can't
     hold a lock on directory reads while we're erasing/copying."""
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             ["mdutil", "-i", "off", str(mount)],
-            capture_output=True, timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        logger.info(
-            "mdutil -i off %s -> rc=%d %s",
-            mount, r.returncode, r.stdout.decode(errors="replace").strip(),
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            # Do NOT call proc.wait() here — with 16+ drives mounted, mdutil
+            # can enter an uninterruptible kernel I/O wait (D state) where
+            # SIGKILL has no effect. Waiting after kill would hang forever.
+            logger.warning("mdutil -i off %s timed out, continuing without it", mount)
+    except OSError as e:
         logger.warning("Could not disable Spotlight indexing on %s: %s", mount, e)
 
 
@@ -108,22 +117,57 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
         progress_callback(bytes_done, total_bytes, src_path.name)
         logger.debug("Copying %s -> %s (%d bytes)", src_path, dest_path, size)
 
-        try:
-            with open(src_path, "rb") as fsrc, open(dest_path, "wb") as fdst:
-                while True:
-                    if cancel_check():
-                        raise InterruptedError("Cancelled")
-                    chunk = fsrc.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    fdst.write(chunk)
-                    bytes_done += len(chunk)
-                    progress_callback(bytes_done, total_bytes, src_path.name)
-        except InterruptedError:
-            raise
-        except OSError as e:
-            logger.error("Error copying %s to %s: %s", src_path, dest_path, e)
-            raise RuntimeError(f"Error copying {src_path.name}: {e}") from e
+        proc = subprocess.Popen(
+            ["cp", str(src_path), str(dest_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        last_size = 0
+        last_progress_t = time.monotonic()
+
+        while True:
+            try:
+                proc.wait(timeout=0.25)
+                break  # cp finished
+            except subprocess.TimeoutExpired:
+                pass  # still running — check stall and cancel below
+
+            if cancel_check():
+                proc.kill()
+                raise InterruptedError("Cancelled")
+
+            # Track how many bytes cp has written so far so the progress bar
+            # moves smoothly rather than jumping at file boundaries.
+            try:
+                current_size = dest_path.stat().st_size
+            except OSError:
+                current_size = last_size
+
+            if current_size > last_size:
+                last_size = current_size
+                last_progress_t = time.monotonic()
+
+            elapsed_stall = time.monotonic() - last_progress_t
+            if elapsed_stall > STALL_TIMEOUT:
+                proc.kill()
+                logger.error(
+                    "Drive stalled for %.0fs writing %s — aborting",
+                    elapsed_stall, src_path.name,
+                )
+                raise RuntimeError(
+                    f"Drive stalled for {elapsed_stall:.0f}s on {src_path.name} "
+                    f"— it may be faulty or disconnected"
+                )
+
+            progress_callback(bytes_done + last_size, total_bytes, src_path.name)
+
+        if proc.returncode != 0:
+            logger.error("cp exited %d for %s", proc.returncode, src_path.name)
+            raise RuntimeError(f"Failed to copy {src_path.name} (cp exit code {proc.returncode})")
+
+        bytes_done += size
+        progress_callback(bytes_done, total_bytes, src_path.name)
 
     logger.info("Finished copying to %s", mount)
     progress_callback(total_bytes, total_bytes, "")

@@ -162,6 +162,7 @@ class CopyModeWidget(QWidget):
 
         worker.progress.connect(progress.update_progress)
         worker.overall_progress.connect(progress.update_overall_progress)
+        worker.drive_starting.connect(progress.set_current_drive)
         worker.drive_status.connect(
             lambda label, ok, err: progress.set_status(
                 f"{'✓' if ok else '✗'} {label}" + (f": {err}" if err else "")

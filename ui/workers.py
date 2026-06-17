@@ -43,6 +43,7 @@ class DriveScanWorker(QThread):
 class CopyWorker(QThread):
     progress = pyqtSignal(int, int, str)         # bytes_done, bytes_total, filename (current drive)
     overall_progress = pyqtSignal(int, int, int) # percent, drives_completed, drives_total
+    drive_starting = pyqtSignal(str)             # drive label — fired before work begins
     drive_status = pyqtSignal(str, bool, str)    # drive label, success, error
     all_done = pyqtSignal(bool, str)
 
@@ -65,8 +66,23 @@ class CopyWorker(QThread):
             if self._job.erase_mode == "format":
                 wipe_drive(drive, drive.volume_name)
                 current_drive = refresh_drive_info(drive)
-            elif self._job.erase_mode == "delete":
-                delete_contents = True
+            else:
+                # Always re-resolve the mount point before copying — drives can
+                # unmount and remount between scan time and copy time, causing
+                # macOS to assign /Volumes/NTXTOC to a different physical disk.
+                refreshed = refresh_drive_info(drive)
+                if refreshed.mount_point != drive.mount_point:
+                    logger.warning(
+                        "%s mount point changed since scan: %s -> %s",
+                        drive.disk_id, drive.mount_point, refreshed.mount_point,
+                    )
+                if not refreshed.mount_point:
+                    raise RuntimeError(
+                        f"{drive.disk_id} is no longer mounted — cannot copy."
+                    )
+                current_drive = refreshed
+                if self._job.erase_mode == "delete":
+                    delete_contents = True
 
             copy_groups_to_drive(
                 self._job.groups,
@@ -97,7 +113,8 @@ class CopyWorker(QThread):
             if self._cancelled:
                 break
 
-            label = f"{drive.volume_name} ({drive.disk_id})"
+            label = f"{drive.mount_point or drive.volume_name} ({drive.disk_id})"
+            self.drive_starting.emit(label)
 
             def on_progress(done, total_b, fname, _i=i):
                 self.progress.emit(done, total_b, fname)
@@ -166,7 +183,7 @@ class RenameWorker(QThread):
             if self._cancelled:
                 break
 
-            label = f"{drive.volume_name} ({drive.disk_id})"
+            label = f"{drive.mount_point or drive.volume_name} ({drive.disk_id})"
             self.progress.emit(i, total, f"Renaming {label}...")
             try:
                 rename_drive(drive, self._job.new_name)
@@ -214,7 +231,7 @@ class MountActionWorker(QThread):
             if self._cancelled:
                 break
 
-            label = f"{drive.volume_name} ({drive.disk_id})"
+            label = f"{drive.mount_point or drive.volume_name} ({drive.disk_id})"
             self.progress.emit(i, total, f"{verb} {label}...")
             try:
                 action(drive)
@@ -258,7 +275,7 @@ class WipeWorker(QThread):
             if self._cancelled:
                 break
 
-            label = f"{drive.volume_name} ({drive.disk_id})"
+            label = f"{drive.mount_point or drive.volume_name} ({drive.disk_id})"
             self.progress.emit(i, total, f"Wiping {label}...")
             try:
                 wipe_drive(drive, self._job.new_name)

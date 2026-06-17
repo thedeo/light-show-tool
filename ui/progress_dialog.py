@@ -36,7 +36,7 @@ class ProgressDialog(QDialog):
         self._overall_divider.setVisible(False)
         layout.addWidget(self._overall_divider)
 
-        self._status_label = QLabel("Starting...")
+        self._status_label = QLabel("Preparing...")
         self._status_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(self._status_label)
 
@@ -90,12 +90,14 @@ class ProgressDialog(QDialog):
         if status:
             self._sub_label.setText(status)
 
+    def set_current_drive(self, label: str):
+        self._status_label.setText(f"Copying {label}…")
+
     def set_status(self, text: str):
-        self._status_label.setText(text)
-        # Append completed drive results to the log
+        # Completed drive results go only to the log, not the status label —
+        # set_current_drive() owns the status label while work is in progress.
         if text:
             self._log.append(text)
-            # Scroll to bottom
             sb = self._log.verticalScrollBar()
             sb.setValue(sb.maximum())
 
