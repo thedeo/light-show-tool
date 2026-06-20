@@ -110,6 +110,7 @@ class CopyJob:
     groups: list
     drives: list
     erase_mode: str = "none"  # "none", "delete" (clear files only), "format" (full reformat)
+    unmount_when_done: bool = False  # eject each drive once its copy completes
 
 
 @dataclass

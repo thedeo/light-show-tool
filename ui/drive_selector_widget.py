@@ -89,9 +89,9 @@ class DriveSelectorWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        header = QLabel("Drives")
-        header.setStyleSheet("font-weight: bold; font-size: 13px;")
-        layout.addWidget(header)
+        self._header = QLabel("Drives")
+        self._header.setStyleSheet("font-weight: bold; font-size: 13px;")
+        layout.addWidget(self._header)
 
         # Banner shown for the full duration of a scan — kept separate from
         # the drive list so it stays visible even after drives start
@@ -197,6 +197,7 @@ class DriveSelectorWidget(QWidget):
 
         self._list_layout.addStretch()
         self._scan_banner.setVisible(True)
+        self._update_header()
 
         for btn in self._action_buttons:
             btn.setEnabled(False)
@@ -215,7 +216,16 @@ class DriveSelectorWidget(QWidget):
         # Insert above the trailing stretch so new rows append in order.
         self._list_layout.insertWidget(self._list_layout.count() - 1, row)
 
+        self._update_header()
         self._emit_selection()
+
+    def _update_header(self):
+        total = len(self._drives)
+        if not total:
+            self._header.setText("Drives")
+            return
+        selected = sum(1 for row in self._rows if row.is_checked())
+        self._header.setText(f"Drives ({selected} of {total} selected)")
 
     def _on_scan_done(self):
         self._scan_worker = None
@@ -240,6 +250,7 @@ class DriveSelectorWidget(QWidget):
         selected = [
             row.drive for row in self._rows if row.is_checked()
         ]
+        self._update_header()
         self.selection_changed.emit(selected)
 
     def _select_all(self):

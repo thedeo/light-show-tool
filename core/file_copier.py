@@ -6,6 +6,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+class SkipDrive(Exception):
+    """Raised to abort the current drive's copy and move on to the next one,
+    without cancelling the whole run (unlike InterruptedError)."""
+
 # If the destination file size hasn't grown for this many seconds, the drive
 # is considered stalled and the copy is aborted.  15 s is conservative — at
 # even 0.1 MB/s a 1 MB chunk takes 10 s, so any genuine write stall shows up
@@ -61,7 +66,18 @@ def _disable_spotlight(mount: Path) -> None:
         logger.warning("Could not disable Spotlight indexing on %s: %s", mount, e)
 
 
-def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_check):
+def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_check,
+                         skip_check=None):
+    if skip_check is None:
+        skip_check = lambda: False
+
+    def _check_interrupts():
+        """Raise if the run was cancelled or the current drive was skipped."""
+        if cancel_check():
+            raise InterruptedError("Cancelled")
+        if skip_check():
+            raise SkipDrive("Skipped")
+
     mount = Path(drive.mount_point)
     logger.info("Starting copy to %s (disk_id=%s, erase_first=%s)", mount, drive.disk_id, erase_first)
 
@@ -76,8 +92,7 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
     if erase_first:
         items = _with_io_retry(lambda: list(mount.iterdir()), f"Listing contents of {mount}")
         for item in items:
-            if cancel_check():
-                raise InterruptedError("Cancelled")
+            _check_interrupts()
             if item.name in SKIP_NAMES:
                 continue
             try:
@@ -110,8 +125,7 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
 
     bytes_done = 0
     for src_path, dest_path, size in file_list:
-        if cancel_check():
-            raise InterruptedError("Cancelled")
+        _check_interrupts()
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         progress_callback(bytes_done, total_bytes, src_path.name)
@@ -133,9 +147,9 @@ def copy_groups_to_drive(groups, drive, erase_first, progress_callback, cancel_c
             except subprocess.TimeoutExpired:
                 pass  # still running — check stall and cancel below
 
-            if cancel_check():
+            if cancel_check() or skip_check():
                 proc.kill()
-                raise InterruptedError("Cancelled")
+                _check_interrupts()
 
             # Track how many bytes cp has written so far so the progress bar
             # moves smoothly rather than jumping at file boundaries.

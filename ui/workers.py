@@ -5,7 +5,7 @@ from core.drive_manager import (
     rename_drive, wipe_drive, refresh_drive_info, mount_drive, unmount_drive,
     iter_external_drives,
 )
-from core.file_copier import copy_groups_to_drive
+from core.file_copier import copy_groups_to_drive, SkipDrive
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +51,20 @@ class CopyWorker(QThread):
         super().__init__(parent)
         self._job = job
         self._cancelled = False
+        self._skip_current = False
 
     def cancel(self):
         self._cancelled = True
 
+    def skip_current(self):
+        """Abort whichever drive is currently being copied and move on to
+        the next one, without cancelling the rest of the run."""
+        self._skip_current = True
+
     def _attempt(self, drive, on_progress):
         """Run the copy (with optional erase) for one drive. Returns
-        (success, error_message); error_message is "Cancelled" if the
-        cancel flag was set mid-operation."""
+        (success, error_message); error_message is "Cancelled" if the run
+        was cancelled mid-operation, or "Skipped" if this drive was skipped."""
         try:
             current_drive = drive
             delete_contents = False
@@ -90,8 +96,20 @@ class CopyWorker(QThread):
                 delete_contents,
                 on_progress,
                 lambda: self._cancelled,
+                lambda: self._skip_current,
             )
+
+            if self._job.unmount_when_done:
+                try:
+                    unmount_drive(current_drive)
+                except Exception as e:
+                    logger.warning(
+                        "Copy succeeded but could not unmount %s: %s",
+                        current_drive.disk_id, e,
+                    )
             return True, ""
+        except SkipDrive:
+            return False, "Skipped"
         except InterruptedError:
             return False, "Cancelled"
         except Exception as e:
@@ -115,6 +133,7 @@ class CopyWorker(QThread):
 
             label = f"{drive.mount_point or drive.volume_name} ({drive.disk_id})"
             self.drive_starting.emit(label)
+            self._skip_current = False  # clear any stale skip from a prior drive
 
             def on_progress(done, total_b, fname, _i=i):
                 self.progress.emit(done, total_b, fname)
@@ -127,6 +146,11 @@ class CopyWorker(QThread):
             elif err == "Cancelled":
                 self.drive_status.emit(label, False, "Cancelled")
                 break
+            elif err == "Skipped":
+                # Manual skip — the user expects this drive to fail, so don't
+                # retry it; just record it and move on.
+                logger.info("%s skipped by user", label)
+                self.drive_status.emit(label, False, "Skipped")
             else:
                 logger.warning("%s failed, deferring a retry to the end of the run: %s", label, err)
                 retry_queue.append((drive, label))
@@ -142,6 +166,9 @@ class CopyWorker(QThread):
                 if self._cancelled:
                     break
 
+                self.drive_starting.emit(label)
+                self._skip_current = False
+
                 def on_progress(done, total_b, fname):
                     self.progress.emit(done, total_b, fname)
 
@@ -151,6 +178,9 @@ class CopyWorker(QThread):
                 elif err == "Cancelled":
                     self.drive_status.emit(label, False, "Cancelled")
                     break
+                elif err == "Skipped":
+                    logger.info("%s skipped by user on retry", label)
+                    self.drive_status.emit(label, False, "Skipped")
                 else:
                     errors.append(f"{label}: {err}")
                     self.drive_status.emit(label, False, err)

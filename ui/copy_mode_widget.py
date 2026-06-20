@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
-    QLabel, QMessageBox,
+    QLabel, QMessageBox, QCheckBox,
 )
 from PyQt6.QtCore import pyqtSlot
 from core.models import CopyJob
@@ -36,6 +36,11 @@ class CopyModeWidget(QWidget):
         self._erase_combo.addItem("Format drive (slow, full reformat)", "format")
         bottom.addWidget(self._erase_combo)
         bottom.addStretch()
+        self._unmount_check = QCheckBox("Eject when done")
+        self._unmount_check.setToolTip(
+            "Unmount each drive as soon as its copy finishes, so it's safe to pull."
+        )
+        bottom.addWidget(self._unmount_check)
         self._copy_btn = QPushButton("Copy Groups to Selected Drives")
         self._copy_btn.setFixedHeight(32)
         self._copy_btn.clicked.connect(self._start_copy)
@@ -150,6 +155,7 @@ class CopyModeWidget(QWidget):
             groups=groups,
             drives=self._selected_drives,
             erase_mode=erase_mode,
+            unmount_when_done=self._unmount_check.isChecked(),
         )
 
         dlg = ConfirmDialog.for_copy(job)
@@ -158,6 +164,7 @@ class CopyModeWidget(QWidget):
 
         progress = ProgressDialog("Copying Files", parent=self)
         progress.enable_overall_progress(len(job.drives))
+        progress.enable_skip()
         worker = CopyWorker(job, parent=self)
 
         worker.progress.connect(progress.update_progress)
@@ -170,6 +177,7 @@ class CopyModeWidget(QWidget):
         )
         worker.all_done.connect(progress.on_all_done)
         progress.rejected.connect(worker.cancel)
+        progress.skip_requested.connect(worker.skip_current)
 
         worker.start()
         progress.exec()

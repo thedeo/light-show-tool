@@ -1,11 +1,13 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton,
-    QHBoxLayout, QTextEdit, QFrame,
+    QHBoxLayout, QTextEdit, QFrame, QMessageBox,
 )
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal
 
 
 class ProgressDialog(QDialog):
+    skip_requested = pyqtSignal()  # user confirmed skipping the current drive
+
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -15,6 +17,7 @@ class ProgressDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
 
         self._cancelled = False
+        self._current_drive_label = ""
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -58,6 +61,11 @@ class ProgressDialog(QDialog):
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
+        # Skip is opt-in via enable_skip() — only the copy flow uses it.
+        self._skip_btn = QPushButton("Skip Drive")
+        self._skip_btn.clicked.connect(self._on_skip)
+        self._skip_btn.setVisible(False)
+        btn_layout.addWidget(self._skip_btn)
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._on_cancel)
         btn_layout.addWidget(self._cancel_btn)
@@ -65,6 +73,22 @@ class ProgressDialog(QDialog):
 
     def was_cancelled(self) -> bool:
         return self._cancelled
+
+    def enable_skip(self):
+        self._skip_btn.setVisible(True)
+
+    def _on_skip(self):
+        drive = self._current_drive_label or "the current drive"
+        confirm = QMessageBox.question(
+            self,
+            "Skip Drive",
+            f"Skip {drive} and move on to the next one?\n\n"
+            "Nothing further will be written to it, and it won't be retried.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.skip_requested.emit()
 
     def enable_overall_progress(self, total_drives: int):
         self._overall_label.setText(f"Overall: 0 of {total_drives} drives (0%)")
@@ -91,6 +115,7 @@ class ProgressDialog(QDialog):
             self._sub_label.setText(status)
 
     def set_current_drive(self, label: str):
+        self._current_drive_label = label
         self._status_label.setText(f"Copying {label}…")
 
     def set_status(self, text: str):
@@ -104,6 +129,7 @@ class ProgressDialog(QDialog):
     @pyqtSlot(bool, str)
     def on_all_done(self, success: bool, error_msg: str):
         self._cancel_btn.setEnabled(False)
+        self._skip_btn.setVisible(False)
         self._progress_bar.setValue(100)
         self._sub_label.setText("")
         if self._overall_bar.isVisible() and success:
