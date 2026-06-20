@@ -3,7 +3,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.drive_manager import (
     rename_drive, wipe_drive, refresh_drive_info, mount_drive, unmount_drive,
-    iter_external_drives,
+    iter_external_drives, list_external_disk_ids, resolve_external_drive,
 )
 from core.file_copier import copy_groups_to_drive, SkipDrive
 
@@ -40,10 +40,39 @@ class DriveScanWorker(QThread):
         self.scan_done.emit()
 
 
+class DrivePollWorker(QThread):
+    """Cheaply polls the set of attached external disk identifiers off the
+    main thread, so the selector can detect drives added/removed and refresh
+    only when the set actually changes."""
+    polled = pyqtSignal(object)  # set[str] of disk_ids, or None if diskutil failed
+
+    def run(self):
+        self.polled.emit(list_external_disk_ids())
+
+
+class DriveResolveWorker(QThread):
+    """Resolves specific newly-attached disk_ids to DriveInfo off the main
+    thread, so a hot-plugged drive can be added incrementally without the
+    full-rescan flicker."""
+    drive_found = pyqtSignal(object)  # DriveInfo
+    done = pyqtSignal()
+
+    def __init__(self, disk_ids, parent=None):
+        super().__init__(parent)
+        self._disk_ids = list(disk_ids)
+
+    def run(self):
+        for disk_id in self._disk_ids:
+            drive = resolve_external_drive(disk_id)
+            if drive is not None:
+                self.drive_found.emit(drive)
+        self.done.emit()
+
+
 class CopyWorker(QThread):
     progress = pyqtSignal(int, int, str)         # bytes_done, bytes_total, filename (current drive)
     overall_progress = pyqtSignal(int, int, int) # percent, drives_completed, drives_total
-    drive_starting = pyqtSignal(str)             # drive label — fired before work begins
+    drive_starting = pyqtSignal(str, int, int)   # label, position (1-based), total — before work begins
     drive_status = pyqtSignal(str, bool, str)    # drive label, success, error
     all_done = pyqtSignal(bool, str)
 
@@ -132,7 +161,7 @@ class CopyWorker(QThread):
                 break
 
             label = f"{drive.mount_point or drive.volume_name} ({drive.disk_id})"
-            self.drive_starting.emit(label)
+            self.drive_starting.emit(label, i + 1, total)
             self._skip_current = False  # clear any stale skip from a prior drive
 
             def on_progress(done, total_b, fname, _i=i):
@@ -162,11 +191,12 @@ class CopyWorker(QThread):
 
         if retry_queue and not self._cancelled:
             self.progress.emit(0, 1, f"Retrying {len(retry_queue)} drive(s) that failed earlier...")
-            for drive, label in retry_queue:
+            retry_total = len(retry_queue)
+            for retry_i, (drive, label) in enumerate(retry_queue):
                 if self._cancelled:
                     break
 
-                self.drive_starting.emit(label)
+                self.drive_starting.emit(label, retry_i + 1, retry_total)
                 self._skip_current = False
 
                 def on_progress(done, total_b, fname):

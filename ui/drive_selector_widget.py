@@ -1,11 +1,28 @@
+import re
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QCheckBox, QFrame, QSizePolicy, QMessageBox, QProgressBar,
+    QApplication,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from .progress_dialog import ProgressDialog
-from .workers import MountActionWorker, DriveScanWorker
+from .workers import (
+    MountActionWorker, DriveScanWorker, DrivePollWorker, DriveResolveWorker,
+)
+
+# How often to poll for drives being plugged in or pulled. The poll itself is
+# a single read-only `diskutil list` run off the main thread, and is skipped
+# entirely while any operation is in progress (see _poll_for_changes), so this
+# can be relaxed without affecting responsiveness during copies.
+POLL_INTERVAL_MS = 5000
+
+
+def _disk_sort_key(disk_id: str) -> int:
+    """Numeric order for disk identifiers so disk4 sorts before disk10
+    (a plain string sort would put disk10 first)."""
+    m = re.search(r"(\d+)$", disk_id or "")
+    return int(m.group(1)) if m else 0
 
 
 class DriveRow(QWidget):
@@ -83,6 +100,11 @@ class DriveSelectorWidget(QWidget):
         self._drives = []
         self._rows: list[DriveRow] = []
         self._scan_worker = None
+        self._poll_worker = None
+        self._resolve_worker = None
+        # Checked disk_ids carried across a refresh so an auto-refresh (or a
+        # manual one) doesn't wipe the user's selection.
+        self._preserve_checked: set[str] = set()
         self._action_buttons: list[QPushButton] = []
 
         layout = QVBoxLayout(self)
@@ -179,9 +201,108 @@ class DriveSelectorWidget(QWidget):
 
         self.refresh()
 
+        # Poll for hot-plugged / removed drives and refresh only when the set
+        # of attached disks actually changes.
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(POLL_INTERVAL_MS)
+        self._poll_timer.timeout.connect(self._poll_for_changes)
+        self._poll_timer.start()
+
+    def _busy(self) -> bool:
+        """True if any drive work or modal operation is in progress — in which
+        case background polling must hold off."""
+        return (
+            self._scan_worker is not None
+            or self._poll_worker is not None
+            or self._resolve_worker is not None
+            or QApplication.activeModalWidget() is not None
+        )
+
+    def _poll_for_changes(self):
+        # Never poll while a scan/poll/resolve is running, or while any
+        # operation/dialog is open — copies, wipes, renames and mounts all run
+        # behind an application-modal dialog, and we must not disturb the
+        # drives (or rebuild the list) mid-operation.
+        if self._busy():
+            return
+
+        self._poll_worker = DrivePollWorker(parent=self)
+        self._poll_worker.polled.connect(self._on_polled)
+        self._poll_worker.start()
+
+    def _on_polled(self, disk_ids):
+        self._poll_worker = None
+        if disk_ids is None:
+            return  # diskutil hiccup — leave the list as-is, try again next tick
+        # Re-check guards: an operation may have started while we polled.
+        if self._scan_worker is not None or self._resolve_worker is not None:
+            return
+        if QApplication.activeModalWidget() is not None:
+            return
+
+        current = {d.disk_id for d in self._drives}
+        removed = current - disk_ids
+        added = disk_ids - current
+
+        # Incrementally update rather than rebuilding the whole list — no
+        # "Scanning…" flicker, and existing selections stay put. A full scan
+        # only happens at launch or on a manual Refresh.
+        if removed:
+            self._remove_drives(removed)
+        if added:
+            self._resolve_added(added)
+
+    def _remove_drives(self, disk_ids):
+        for row in [r for r in self._rows if r.drive.disk_id in disk_ids]:
+            row.setParent(None)
+            self._rows.remove(row)
+        self._drives = [d for d in self._drives if d.disk_id not in disk_ids]
+        self._show_no_drives_if_empty()
+        self._update_header()
+        self._emit_selection()
+
+    def _resolve_added(self, disk_ids):
+        # The "No external drives detected." placeholder must go before rows
+        # are appended; _on_drive_found inserts ahead of the trailing stretch.
+        if self._no_drives_label.parent() is not None:
+            self._no_drives_label.setParent(None)
+        self._resolve_worker = DriveResolveWorker(disk_ids, parent=self)
+        self._resolve_worker.drive_found.connect(self._on_drive_found)
+        self._resolve_worker.done.connect(self._on_resolve_done)
+        self._resolve_worker.start()
+
+    def _on_resolve_done(self):
+        self._resolve_worker = None
+
+    def _show_no_drives_if_empty(self):
+        if self._drives:
+            return
+        while self._list_layout.count():
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+        self._list_layout.addWidget(self._no_drives_label)
+        self._list_layout.addStretch()
+
     def refresh(self):
         if self._scan_worker is not None:
             return  # a scan is already in flight
+
+        # A full scan supersedes any in-flight incremental resolve — drop it so
+        # its drive_found emissions don't double-add rows during the rebuild.
+        if self._resolve_worker is not None:
+            try:
+                self._resolve_worker.drive_found.disconnect(self._on_drive_found)
+                self._resolve_worker.done.disconnect(self._on_resolve_done)
+            except TypeError:
+                pass
+            self._resolve_worker = None
+
+        # Remember which drives were selected so the rebuild below doesn't
+        # silently drop the user's selection (matters most for auto-refresh).
+        self._preserve_checked = {
+            row.drive.disk_id for row in self._rows if row.is_checked()
+        }
 
         # Clear existing rows and show a placeholder immediately — never
         # block the UI thread waiting on diskutil, which can wedge.
@@ -208,13 +329,27 @@ class DriveSelectorWidget(QWidget):
         self._scan_worker.start()
 
     def _on_drive_found(self, drive):
-        self._drives.append(drive)
-
         row = DriveRow(drive)
         row.toggled.connect(self._on_row_toggled)
-        self._rows.append(row)
-        # Insert above the trailing stretch so new rows append in order.
-        self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+        # Restore a prior selection (only mounted drives can be checked).
+        if drive.is_mounted and drive.disk_id in self._preserve_checked:
+            row.set_checked(True)
+
+        # Keep the list in natural disk order so an incrementally-added drive
+        # lands in its proper place, not at the bottom. (The full scan already
+        # arrives sorted, so this leaves that path's ordering unchanged.) The
+        # row's layout index matches its index in _rows — the only extra item
+        # in the layout is the trailing stretch.
+        pos = len(self._drives)
+        key = _disk_sort_key(drive.disk_id)
+        for i, d in enumerate(self._drives):
+            if _disk_sort_key(d.disk_id) > key:
+                pos = i
+                break
+
+        self._drives.insert(pos, drive)
+        self._rows.insert(pos, row)
+        self._list_layout.insertWidget(pos, row)
 
         self._update_header()
         self._emit_selection()

@@ -39,7 +39,7 @@ class ConfirmDialog(QDialog):
     @staticmethod
     def for_copy(job) -> "ConfirmDialog":
         group_lines = "\n".join(
-            f"  • {g.name} ({len(g.files)} file{'s' if len(g.files) != 1 else ''})"
+            f"  • {g.name} ({len(g.files)} show{'s' if len(g.files) != 1 else ''})"
             for g in job.groups
         )
         drive_lines = "\n".join(

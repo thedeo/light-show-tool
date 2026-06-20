@@ -91,7 +91,7 @@ class ProgressDialog(QDialog):
             self.skip_requested.emit()
 
     def enable_overall_progress(self, total_drives: int):
-        self._overall_label.setText(f"Overall: 0 of {total_drives} drives (0%)")
+        self._overall_label.setText(f"Overall: 0 of {total_drives} drives complete (0%)")
         self._overall_label.setVisible(True)
         self._overall_bar.setVisible(True)
         self._overall_divider.setVisible(True)
@@ -99,7 +99,7 @@ class ProgressDialog(QDialog):
     @pyqtSlot(int, int, int)
     def update_overall_progress(self, percent: int, completed: int, total: int):
         self._overall_bar.setValue(percent)
-        self._overall_label.setText(f"Overall: {completed} of {total} drives ({percent}%)")
+        self._overall_label.setText(f"Overall: {completed} of {total} drives complete ({percent}%)")
 
     def _on_cancel(self):
         self._cancelled = True
@@ -114,9 +114,9 @@ class ProgressDialog(QDialog):
         if status:
             self._sub_label.setText(status)
 
-    def set_current_drive(self, label: str):
+    def set_current_drive(self, label: str, position: int, total: int):
         self._current_drive_label = label
-        self._status_label.setText(f"Copying {label}…")
+        self._status_label.setText(f"Copying drive {position} of {total}: {label}…")
 
     def set_status(self, text: str):
         # Completed drive results go only to the log, not the status label —

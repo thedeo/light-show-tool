@@ -64,6 +64,88 @@ def _boot_disk_id():
     return info.get("ParentWholeDisk") or info.get("DeviceIdentifier")
 
 
+def list_external_disk_ids():
+    """Fast poll: the set of whole-disk identifiers for attached external,
+    non-boot disks that have partitions. Skips the per-partition `diskutil
+    info` calls that iter_external_drives makes, so it's cheap enough to run
+    on a timer to detect drives being plugged in or pulled.
+
+    Returns None (not an empty set) if diskutil couldn't be queried, so the
+    caller can distinguish "nothing attached" from "couldn't tell" and avoid
+    refreshing on a transient failure.
+    """
+    r = _diskutil(["list", "-plist", "external"], LIST_TIMEOUT)
+    if r is None or r.returncode != 0:
+        return None
+
+    boot_disk = _boot_disk_id()
+    data = plistlib.loads(r.stdout)
+    ids = set()
+    for disk_entry in data.get("AllDisksAndPartitions", []):
+        disk_id = disk_entry.get("DeviceIdentifier")
+        if not disk_id or disk_id == boot_disk:
+            continue
+        if not disk_entry.get("Partitions"):
+            continue
+        ids.add(disk_id)
+    return ids
+
+
+def _resolve_disk_entry(disk_entry):
+    """Build a DriveInfo from a diskutil AllDisksAndPartitions entry, querying
+    its partitions for mount/volume details. Prefers a mounted partition and
+    falls back to the first one (unmounted) so the drive still shows up and can
+    be mounted. Returns None if the disk has no usable partition."""
+    disk_id = disk_entry.get("DeviceIdentifier")
+    if not disk_id:
+        return None
+
+    chosen_info = None
+    chosen_part_id = None
+    for partition in disk_entry.get("Partitions", []):
+        part_id = partition.get("DeviceIdentifier")
+        if not part_id:
+            continue
+
+        r = _diskutil(["info", "-plist", part_id], INFO_TIMEOUT)
+        if r is None or r.returncode != 0:
+            continue
+
+        info = plistlib.loads(r.stdout)
+        if info.get("MountPoint"):
+            chosen_info = info
+            chosen_part_id = part_id
+            break
+        elif chosen_info is None:
+            chosen_info = info
+            chosen_part_id = part_id
+
+    if chosen_info is None:
+        return None
+
+    return DriveInfo(
+        disk_id=disk_id,
+        partition_id=chosen_part_id,
+        volume_name=chosen_info.get("VolumeName") or "Unnamed",
+        mount_point=chosen_info.get("MountPoint", ""),
+        size_bytes=chosen_info.get("TotalSize", 0),
+        filesystem=chosen_info.get("FilesystemType", ""),
+    )
+
+
+def resolve_external_drive(disk_id):
+    """Resolve a single external disk_id to a DriveInfo (or None). Lets callers
+    add one hot-plugged drive without rescanning every attached disk."""
+    r = _diskutil(["list", "-plist", disk_id], INFO_TIMEOUT)
+    if r is None or r.returncode != 0:
+        return None
+    data = plistlib.loads(r.stdout)
+    for disk_entry in data.get("AllDisksAndPartitions", []):
+        if disk_entry.get("DeviceIdentifier") == disk_id:
+            return _resolve_disk_entry(disk_entry)
+    return None
+
+
 def iter_external_drives():
     """Yield each external, non-boot drive as soon as it's resolved, rather
     than waiting for every disk to be queried — the per-disk diskutil calls
@@ -87,47 +169,11 @@ def iter_external_drives():
     data = plistlib.loads(result.stdout)
 
     for disk_entry in data.get("AllDisksAndPartitions", []):
-        disk_id = disk_entry.get("DeviceIdentifier")
-        if not disk_id or disk_id == boot_disk:
+        if disk_entry.get("DeviceIdentifier") == boot_disk:
             continue
-
-        partitions = disk_entry.get("Partitions", [])
-        if not partitions:
-            continue
-
-        # Prefer a mounted partition; fall back to the first partition
-        # (unmounted) so the drive still shows up and can be mounted.
-        chosen_info = None
-        chosen_part_id = None
-
-        for partition in partitions:
-            part_id = partition.get("DeviceIdentifier")
-            if not part_id:
-                continue
-
-            r = _diskutil(["info", "-plist", part_id], INFO_TIMEOUT)
-            if r is None or r.returncode != 0:
-                continue
-
-            info = plistlib.loads(r.stdout)
-
-            if info.get("MountPoint"):
-                chosen_info = info
-                chosen_part_id = part_id
-                break
-            elif chosen_info is None:
-                chosen_info = info
-                chosen_part_id = part_id
-
-        if chosen_info is not None:
-            yield DriveInfo(
-                disk_id=disk_id,
-                partition_id=chosen_part_id,
-                volume_name=chosen_info.get("VolumeName") or "Unnamed",
-                mount_point=chosen_info.get("MountPoint", ""),
-                size_bytes=chosen_info.get("TotalSize", 0),
-                filesystem=chosen_info.get("FilesystemType", ""),
-            )
+        drive = _resolve_disk_entry(disk_entry)
+        if drive is not None:
+            yield drive
 
 
 def mount_drive(drive: DriveInfo) -> None:
