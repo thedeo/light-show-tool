@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSlot
 from core.models import WipeJob
+from core.state_manager import save_settings, load_settings
 from .confirm_dialog import ConfirmDialog
 from .progress_dialog import ProgressDialog
 from .workers import WipeWorker
@@ -34,11 +35,14 @@ class WipeModeWidget(QWidget):
 
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Volume label after wipe:"))
-        self._name_edit = QLineEdit("NO NAME")
+        self._name_edit = QLineEdit(load_settings().get("wipe_label", "NO NAME"))
         self._name_edit.setMaxLength(11)
         self._name_edit.textChanged.connect(self._update_counter)
+        self._name_edit.textChanged.connect(
+            lambda text: save_settings({"wipe_label": text})
+        )
         name_layout.addWidget(self._name_edit)
-        self._counter_label = QLabel("7/11")
+        self._counter_label = QLabel(f"{len(self._name_edit.text())}/11")
         self._counter_label.setStyleSheet("color: gray; font-size: 11px;")
         name_layout.addWidget(self._counter_label)
         layout.addLayout(name_layout)
@@ -50,7 +54,8 @@ class WipeModeWidget(QWidget):
         self._wipe_btn = QPushButton("Wipe Selected Drives")
         self._wipe_btn.setFixedHeight(32)
         self._wipe_btn.setStyleSheet(
-            "QPushButton { background-color: #cc0000; color: white; font-weight: bold; border-radius: 4px; }"
+            "QPushButton { background-color: #cc0000; color: white; font-weight: bold; "
+            "border-radius: 4px; padding: 6px 20px; }"
             "QPushButton:hover { background-color: #aa0000; }"
             "QPushButton:pressed { background-color: #880000; }"
         )

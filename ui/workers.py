@@ -73,7 +73,7 @@ class CopyWorker(QThread):
     progress = pyqtSignal(int, int, str)         # bytes_done, bytes_total, filename (current drive)
     overall_progress = pyqtSignal(int, int, int) # percent, drives_completed, drives_total
     drive_starting = pyqtSignal(str, int, int)   # label, position (1-based), total — before work begins
-    drive_status = pyqtSignal(str, bool, str)    # drive label, success, error
+    drive_status = pyqtSignal(str, str, bool, str)  # disk_id, label, success, error
     all_done = pyqtSignal(bool, str)
 
     def __init__(self, job, parent=None):
@@ -171,15 +171,15 @@ class CopyWorker(QThread):
 
             success, err = self._attempt(drive, on_progress)
             if success:
-                self.drive_status.emit(label, True, "")
+                self.drive_status.emit(drive.disk_id, label, True, "")
             elif err == "Cancelled":
-                self.drive_status.emit(label, False, "Cancelled")
+                self.drive_status.emit(drive.disk_id, label, False, "Cancelled")
                 break
             elif err == "Skipped":
                 # Manual skip — the user expects this drive to fail, so don't
                 # retry it; just record it and move on.
                 logger.info("%s skipped by user", label)
-                self.drive_status.emit(label, False, "Skipped")
+                self.drive_status.emit(drive.disk_id, label, False, "Skipped")
             else:
                 logger.warning("%s failed, deferring a retry to the end of the run: %s", label, err)
                 retry_queue.append((drive, label))
@@ -204,16 +204,16 @@ class CopyWorker(QThread):
 
                 success, err = self._attempt(drive, on_progress)
                 if success:
-                    self.drive_status.emit(label, True, "(succeeded on retry)")
+                    self.drive_status.emit(drive.disk_id, label, True, "(succeeded on retry)")
                 elif err == "Cancelled":
-                    self.drive_status.emit(label, False, "Cancelled")
+                    self.drive_status.emit(drive.disk_id, label, False, "Cancelled")
                     break
                 elif err == "Skipped":
                     logger.info("%s skipped by user on retry", label)
-                    self.drive_status.emit(label, False, "Skipped")
+                    self.drive_status.emit(drive.disk_id, label, False, "Skipped")
                 else:
                     errors.append(f"{label}: {err}")
-                    self.drive_status.emit(label, False, err)
+                    self.drive_status.emit(drive.disk_id, label, False, err)
 
         if self._cancelled:
             self.all_done.emit(False, "Operation cancelled.")

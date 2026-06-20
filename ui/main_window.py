@@ -2,7 +2,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QStackedWidget, QFrame,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QByteArray
+from core.state_manager import save_settings, load_settings
 from .drive_selector_widget import DriveSelectorWidget
 from .copy_mode_widget import CopyModeWidget
 from .rename_mode_widget import RenameModeWidget
@@ -66,9 +67,27 @@ class MainWindow(QMainWindow):
         self._drive_selector.selection_changed.connect(self._rename_widget.set_selected_drives)
         self._drive_selector.selection_changed.connect(self._wipe_widget.set_selected_drives)
 
-        self._switch_mode(0)
+        # Reflect copy progress in the drive selector's status dots.
+        self._copy_widget.copy_started.connect(self._drive_selector.mark_copy_pending)
+        self._copy_widget.copy_result.connect(self._drive_selector.mark_copy_result)
+
+        # Restore persisted window geometry and last-used mode.
+        settings = load_settings()
+        geo = settings.get("window_geometry")
+        if geo:
+            try:
+                self.restoreGeometry(QByteArray.fromHex(geo.encode()))
+            except Exception:
+                pass
+        active = settings.get("active_mode", 0)
+        self._switch_mode(active if active in (0, 1, 2) else 0)
 
     def _switch_mode(self, index: int):
         self._stack.setCurrentIndex(index)
         for i, btn in enumerate(self._mode_buttons):
             btn.setChecked(i == index)
+        save_settings({"active_mode": index})
+
+    def closeEvent(self, event):
+        save_settings({"window_geometry": bytes(self.saveGeometry().toHex()).decode()})
+        super().closeEvent(event)

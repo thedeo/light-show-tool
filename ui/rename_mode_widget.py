@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSlot
 from core.models import RenameJob
+from core.state_manager import save_settings, load_settings
 from .confirm_dialog import ConfirmDialog
 from .progress_dialog import ProgressDialog
 from .workers import RenameWorker
@@ -35,9 +36,13 @@ class RenameModeWidget(QWidget):
         self._name_edit = QLineEdit()
         self._name_edit.setMaxLength(11)
         self._name_edit.setPlaceholderText("e.g. SHOW2025")
+        self._name_edit.setText(load_settings().get("rename_label", ""))
         self._name_edit.textChanged.connect(self._update_counter)
+        self._name_edit.textChanged.connect(
+            lambda text: save_settings({"rename_label": text})
+        )
         name_layout.addWidget(self._name_edit)
-        self._counter_label = QLabel("0/11")
+        self._counter_label = QLabel(f"{len(self._name_edit.text())}/11")
         self._counter_label.setStyleSheet("color: gray; font-size: 11px;")
         name_layout.addWidget(self._counter_label)
         layout.addLayout(name_layout)

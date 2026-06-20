@@ -28,9 +28,16 @@ def _disk_sort_key(disk_id: str) -> int:
 class DriveRow(QWidget):
     toggled = pyqtSignal(object, bool)  # DriveInfo, checked
 
+    # Status-dot colors, by copy lifecycle state.
+    _DOT_BLUE = "#1565c0"    # loaded, not yet copied this session
+    _DOT_GREEN = "#2e7d32"   # copied successfully
+    _DOT_ORANGE = "#ef6c00"  # copy failed
+    _DOT_RED = "#c62828"     # unmounted — can't be copied
+
     def __init__(self, drive, parent=None):
         super().__init__(parent)
         self.drive = drive
+        self._copy_status = "pending"  # "pending" | "success" | "failed"
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -43,15 +50,10 @@ class DriveRow(QWidget):
         self._checkbox.toggled.connect(lambda checked: self.toggled.emit(self.drive, checked))
         layout.addWidget(self._checkbox)
 
-        status_label = QLabel("●")
-        status_label.setFixedWidth(14)
-        if drive.is_mounted:
-            status_label.setStyleSheet("color: #2e7d32; font-size: 12px;")
-            status_label.setToolTip("Mounted")
-        else:
-            status_label.setStyleSheet("color: #c62828; font-size: 12px;")
-            status_label.setToolTip("Unmounted")
-        layout.addWidget(status_label)
+        self._status_label = QLabel("●")
+        self._status_label.setFixedWidth(14)
+        layout.addWidget(self._status_label)
+        self._update_status_dot()
 
         name_text = Path(drive.mount_point).name if drive.is_mounted else drive.volume_name
         name_style = "color: gray;" if not drive.is_mounted else ""
@@ -87,6 +89,25 @@ class DriveRow(QWidget):
 
     def is_checked(self) -> bool:
         return self._checkbox.isChecked()
+
+    def set_copy_status(self, status: str):
+        """status: 'pending', 'success', or 'failed'."""
+        self._copy_status = status
+        self._update_status_dot()
+
+    def _update_status_dot(self):
+        # A copy result takes priority over mount state so a drive that was
+        # auto-ejected after a successful copy still reads as green.
+        if self._copy_status == "success":
+            color, tip = self._DOT_GREEN, "Copied successfully"
+        elif self._copy_status == "failed":
+            color, tip = self._DOT_ORANGE, "Copy failed"
+        elif self.drive.is_mounted:
+            color, tip = self._DOT_BLUE, "Mounted — not yet copied"
+        else:
+            color, tip = self._DOT_RED, "Unmounted"
+        self._status_label.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self._status_label.setToolTip(tip)
 
 
 class DriveSelectorWidget(QWidget):
@@ -361,6 +382,19 @@ class DriveSelectorWidget(QWidget):
             return
         selected = sum(1 for row in self._rows if row.is_checked())
         self._header.setText(f"Drives ({selected} of {total} selected)")
+
+    def mark_copy_pending(self, disk_ids: list):
+        """Reset the given drives' status dots to blue at the start of a run."""
+        targets = set(disk_ids)
+        for row in self._rows:
+            if row.drive.disk_id in targets:
+                row.set_copy_status("pending")
+
+    def mark_copy_result(self, disk_id: str, success: bool):
+        for row in self._rows:
+            if row.drive.disk_id == disk_id:
+                row.set_copy_status("success" if success else "failed")
+                break
 
     def _on_scan_done(self):
         self._scan_worker = None

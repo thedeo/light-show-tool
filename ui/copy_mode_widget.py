@@ -2,9 +2,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
     QLabel, QMessageBox, QCheckBox,
 )
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, pyqtSignal
 from core.models import CopyJob
-from core.state_manager import save_state, load_state
+from core.state_manager import save_state, load_state, save_settings, load_settings
 from .file_group_widget import FileGroupPanelWidget
 from .confirm_dialog import ConfirmDialog
 from .progress_dialog import ProgressDialog
@@ -12,6 +12,10 @@ from .workers import CopyWorker
 
 
 class CopyModeWidget(QWidget):
+    # Forwarded to the drive selector so its status dots reflect copy results.
+    copy_started = pyqtSignal(list)       # disk_ids about to be copied
+    copy_result = pyqtSignal(str, bool)   # disk_id, success
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected_drives = []
@@ -53,8 +57,16 @@ class CopyModeWidget(QWidget):
         if saved:
             self._panel.load_state_data(saved)
 
+        settings = load_settings()
+        idx = self._erase_combo.findData(settings.get("erase_mode", "none"))
+        if idx >= 0:
+            self._erase_combo.setCurrentIndex(idx)
+        self._unmount_check.setChecked(bool(settings.get("eject_when_done", False)))
+
         self._panel.groups_changed.connect(self._update_copy_btn)
         self._panel.groups_changed.connect(self._save_state)
+        self._erase_combo.currentIndexChanged.connect(self._save_settings)
+        self._unmount_check.toggled.connect(self._save_settings)
         self._update_copy_btn()
 
     @pyqtSlot(list)
@@ -63,6 +75,12 @@ class CopyModeWidget(QWidget):
 
     def _save_state(self):
         save_state(self._panel.get_state_data())
+
+    def _save_settings(self):
+        save_settings({
+            "erase_mode": self._erase_combo.currentData(),
+            "eject_when_done": self._unmount_check.isChecked(),
+        })
 
     def _update_copy_btn(self):
         n_sel = len(self._panel.get_selected_groups())
@@ -167,14 +185,24 @@ class CopyModeWidget(QWidget):
         progress.enable_skip()
         worker = CopyWorker(job, parent=self)
 
+        # Reset the selector's dots to "pending" (blue) for this run's drives.
+        self.copy_started.emit([d.disk_id for d in job.drives])
+
+        def on_drive_status(disk_id, label, ok, err):
+            progress.set_status(
+                f"{'✓' if ok else '✗'} {label}" + (f": {err}" if err else "")
+            )
+            # Green on success, orange on a genuine failure. Skipped/cancelled
+            # drives weren't really copied, so leave their dot blue (pending).
+            if ok:
+                self.copy_result.emit(disk_id, True)
+            elif err not in ("Cancelled", "Skipped"):
+                self.copy_result.emit(disk_id, False)
+
         worker.progress.connect(progress.update_progress)
         worker.overall_progress.connect(progress.update_overall_progress)
         worker.drive_starting.connect(progress.set_current_drive)
-        worker.drive_status.connect(
-            lambda label, ok, err: progress.set_status(
-                f"{'✓' if ok else '✗'} {label}" + (f": {err}" if err else "")
-            )
-        )
+        worker.drive_status.connect(on_drive_status)
         worker.all_done.connect(progress.on_all_done)
         progress.rejected.connect(worker.cancel)
         progress.skip_requested.connect(worker.skip_current)
