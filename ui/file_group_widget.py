@@ -318,7 +318,7 @@ class FileGroupCard(QWidget):
         remove_btn.setFixedSize(22, 22)
         remove_btn.setStyleSheet("color: red; font-weight: bold; border: none;")
         remove_btn.setToolTip("Delete this group")
-        remove_btn.clicked.connect(lambda: self.removed.emit(self))
+        remove_btn.clicked.connect(self._confirm_remove)
         header.addWidget(remove_btn)
 
         frame_layout.addLayout(header)
@@ -334,6 +334,24 @@ class FileGroupCard(QWidget):
 
         outer.addWidget(frame)
         self._update_visual_state()
+
+    def _confirm_remove(self):
+        # Confirm only when there's something to lose — empty groups delete
+        # immediately. Source files on disk are never touched either way.
+        count = len(self._drop_area.get_pairs())
+        if count > 0:
+            resp = QMessageBox.question(
+                self,
+                "Delete Group",
+                f"Delete the group “{self.group.name}” and its "
+                f"{count} show{'s' if count != 1 else ''}?\n\n"
+                "This only removes them from the app — your source files aren't deleted.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+        self.removed.emit(self)
 
     def _on_pairs_changed(self):
         self.group.files = self._drop_area.get_pairs()
