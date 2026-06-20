@@ -129,7 +129,10 @@ class DriveSelectorWidget(QWidget):
         self._action_buttons: list[QPushButton] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        # Match the right-hand panels' 12px inner margin so the vertical
+        # divider sits centered between the two sides rather than hugging this
+        # panel.
+        layout.setContentsMargins(0, 0, 12, 0)
         layout.setSpacing(4)
 
         self._header = QLabel("Drives")

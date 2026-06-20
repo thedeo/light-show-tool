@@ -386,17 +386,51 @@ class FileGroupPanelWidget(QWidget):
         toolbar.addWidget(lbl)
         toolbar.addStretch()
 
+        BTN_HEIGHT = 26
+        # Style the select buttons explicitly so they don't fall back to the
+        # native macOS bezel — that way they share an exact height and box
+        # model with the styled "+ New Group" button and line up cleanly.
+        select_style = (
+            "QPushButton { background-color: #4a4a4a; color: white; "
+            "border-radius: 4px; padding: 0px 10px; }"
+            "QPushButton:hover { background-color: #565656; }"
+            "QPushButton:pressed { background-color: #3a3a3a; }"
+        )
+
+        select_lbl = QLabel("Select:")
+        select_lbl.setStyleSheet("color: gray; font-size: 11px;")
+        toolbar.addWidget(select_lbl)
+
         all_btn = QPushButton("All")
-        all_btn.setFixedHeight(24)
+        all_btn.setFixedHeight(BTN_HEIGHT)
+        all_btn.setStyleSheet(select_style)
+        all_btn.setToolTip("Select all groups for copying")
         all_btn.clicked.connect(self._select_all)
         toolbar.addWidget(all_btn)
 
         none_btn = QPushButton("None")
-        none_btn.setFixedHeight(24)
+        none_btn.setFixedHeight(BTN_HEIGHT)
+        none_btn.setStyleSheet(select_style)
+        none_btn.setToolTip("Deselect all groups")
         none_btn.clicked.connect(self._deselect_all)
         toolbar.addWidget(none_btn)
 
+        toolbar.addSpacing(12)
+
+        add_btn = QPushButton("+ New Group")
+        add_btn.setFixedHeight(BTN_HEIGHT)
+        add_btn.setToolTip("Create a new, empty group")
+        add_btn.setStyleSheet(
+            "QPushButton { background-color: #1565c0; color: white; font-weight: bold; "
+            "border-radius: 4px; padding: 0px 10px; }"
+            "QPushButton:hover { background-color: #1976d2; }"
+            "QPushButton:pressed { background-color: #0d47a1; }"
+        )
+        add_btn.clicked.connect(self._add_group)
+        toolbar.addWidget(add_btn)
+
         layout.addLayout(toolbar)
+        layout.addSpacing(8)  # breathing room before the group cards
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -408,10 +442,6 @@ class FileGroupPanelWidget(QWidget):
         self._container_layout.addStretch()
         scroll.setWidget(self._container)
         layout.addWidget(scroll)
-
-        add_btn = QPushButton("+ New Group")
-        add_btn.clicked.connect(self._add_group)
-        layout.addWidget(add_btn)
 
     # ------------------------------------------------------------------
     def _create_card(self, group: FileGroup, selected: bool = True) -> FileGroupCard:
