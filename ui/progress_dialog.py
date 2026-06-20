@@ -60,6 +60,11 @@ class ProgressDialog(QDialog):
         layout.addWidget(self._log)
 
         btn_layout = QHBoxLayout()
+        # View Logs is left-aligned and always available — the toolbar's Logs
+        # button is unreachable while this modal dialog is open.
+        self._logs_btn = QPushButton("View Logs")
+        self._logs_btn.clicked.connect(self._show_logs)
+        btn_layout.addWidget(self._logs_btn)
         btn_layout.addStretch()
         # Skip is opt-in via enable_skip() — only the copy flow uses it.
         self._skip_btn = QPushButton("Skip Drive")
@@ -71,8 +76,21 @@ class ProgressDialog(QDialog):
         btn_layout.addWidget(self._cancel_btn)
         layout.addLayout(btn_layout)
 
+        self._log_dialog = None
+
     def was_cancelled(self) -> bool:
         return self._cancelled
+
+    def _show_logs(self):
+        # Parent the viewer to this modal dialog so it's part of the modal
+        # group and stays interactive while the operation runs.
+        from .log_viewer_dialog import LogViewerDialog
+        if self._log_dialog is not None and self._log_dialog.isVisible():
+            self._log_dialog.raise_()
+            self._log_dialog.activateWindow()
+            return
+        self._log_dialog = LogViewerDialog(parent=self)
+        self._log_dialog.show()
 
     def enable_skip(self):
         self._skip_btn.setVisible(True)

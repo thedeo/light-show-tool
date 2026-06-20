@@ -31,25 +31,27 @@ class CopyModeWidget(QWidget):
         self._panel = FileGroupPanelWidget()
         layout.addWidget(self._panel)
 
-        # Bottom bar
-        bottom = QHBoxLayout()
-        bottom.addWidget(QLabel("Before copying:"))
+        # Options row: how to prepare each drive before copying.
+        options = QHBoxLayout()
+        options.addWidget(QLabel("Before copying:"))
         self._erase_combo = QComboBox()
         self._erase_combo.addItem("Don't erase", "none")
         self._erase_combo.addItem("Delete existing files (fast)", "delete")
         self._erase_combo.addItem("Format drive (slow, full reformat)", "format")
-        bottom.addWidget(self._erase_combo)
-        bottom.addStretch()
+        options.addWidget(self._erase_combo)
+        options.addStretch()
         self._unmount_check = QCheckBox("Eject when done")
         self._unmount_check.setToolTip(
             "Unmount each drive as soon as its copy finishes, so it's safe to pull."
         )
-        bottom.addWidget(self._unmount_check)
+        options.addWidget(self._unmount_check)
+        layout.addLayout(options)
+
+        # Primary action on its own full-width row for prominence.
         self._copy_btn = QPushButton("Copy Groups to Selected Drives")
-        self._copy_btn.setFixedHeight(32)
+        self._copy_btn.setFixedHeight(38)
         self._copy_btn.clicked.connect(self._start_copy)
-        bottom.addWidget(self._copy_btn)
-        layout.addLayout(bottom)
+        layout.addWidget(self._copy_btn)
 
         # Load persisted state before connecting signals so the initial
         # load doesn't trigger spurious saves.

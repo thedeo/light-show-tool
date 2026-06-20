@@ -8,6 +8,8 @@ from .drive_selector_widget import DriveSelectorWidget
 from .copy_mode_widget import CopyModeWidget
 from .rename_mode_widget import RenameModeWidget
 from .wipe_mode_widget import WipeModeWidget
+from .help_dialog import HelpDialog
+from .log_viewer_dialog import LogViewerDialog
 
 
 class MainWindow(QMainWindow):
@@ -36,7 +38,20 @@ class MainWindow(QMainWindow):
             self._mode_buttons.append(btn)
 
         toolbar.addStretch()
+
+        logs_btn = QPushButton("Logs")
+        logs_btn.setFixedHeight(34)
+        logs_btn.clicked.connect(self._show_logs)
+        toolbar.addWidget(logs_btn)
+
+        help_btn = QPushButton("Help")
+        help_btn.setFixedHeight(34)
+        help_btn.clicked.connect(self._show_help)
+        toolbar.addWidget(help_btn)
+
         root.addLayout(toolbar)
+
+        self._log_dialog = None
 
         # Horizontal split: drive selector (left) + stacked modes (right)
         split = QHBoxLayout()
@@ -87,6 +102,19 @@ class MainWindow(QMainWindow):
         for i, btn in enumerate(self._mode_buttons):
             btn.setChecked(i == index)
         save_settings({"active_mode": index})
+
+    def _show_help(self):
+        HelpDialog(parent=self).exec()
+
+    def _show_logs(self):
+        # Reuse a single non-modal viewer so repeated clicks just bring it
+        # forward rather than stacking windows.
+        if self._log_dialog is not None and self._log_dialog.isVisible():
+            self._log_dialog.raise_()
+            self._log_dialog.activateWindow()
+            return
+        self._log_dialog = LogViewerDialog(parent=self)
+        self._log_dialog.show()
 
     def closeEvent(self, event):
         save_settings({"window_geometry": bytes(self.saveGeometry().toHex()).decode()})
